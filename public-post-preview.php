@@ -47,6 +47,13 @@ if ( ! class_exists( 'WP' ) ) {
 class DS_Public_Post_Preview {
 
 	/**
+	 * ID of the post being shown as a public preview on the current request.
+	 *
+	 * @var int
+	 */
+	private static $preview_post_id = 0;
+
+	/**
 	 * Registers actions and filters.
 	 *
 	 * @since 1.0.0
@@ -821,6 +828,144 @@ class DS_Public_Post_Preview {
 	}
 
 	/**
+	 * Enqueues the script which polls for updates to the previewed post.
+	 *
+	 * @since x.y.z
+	 */
+	public static function enqueue_preview_updates_script() {
+		$post = get_post( self::$preview_post_id );
+		if ( ! $post ) {
+			return;
+		}
+
+		$suffix = defined( 'SCRIPT_DEBUG' ) && SCRIPT_DEBUG ? '' : '.min';
+
+		wp_enqueue_script(
+			'public-post-preview-updates',
+			plugins_url( "js/public-post-preview-updates$suffix.js", __FILE__ ),
+			array(),
+			'x.y.z',
+			true
+		);
+
+		$config = array(
+			'endpoint'    => add_query_arg(
+				'_ppp',
+				get_query_var( '_ppp' ),
+				rest_url( sprintf( 'public-post-preview/v1/status/%d', $post->ID ) )
+			),
+			'modified'    => $post->post_modified,
+			'strings'     => array(
+				'updated'   => __( 'This post has been updated.', 'public-post-preview' ),
+				'published' => __( 'This post has now been published.', 'public-post-preview' ),
+				'reload'    => __( 'Reload', 'public-post-preview' ),
+				'viewPost'  => __( 'View post', 'public-post-preview' ),
+				'dismiss'   => __( 'Dismiss', 'public-post-preview' ),
+			),
+		);
+
+		wp_localize_script( 'public-post-preview-updates', 'DSPublicPostPreviewUpdates', $config );
+
+		wp_register_style( 'public-post-preview-updates', false, array(), 'x.y.z' );
+		wp_enqueue_style( 'public-post-preview-updates' );
+		wp_add_inline_style( 'public-post-preview-updates', self::get_preview_updates_css() );
+	}
+
+	/**
+	 * Prints the live region the update notice is rendered into.
+	 *
+	 * The region is present from page load so assistive technology announces
+	 * content added to it later.
+	 *
+	 * @since x.y.z
+	 */
+	public static function print_preview_updates_container() {
+		echo '<div id="public-post-preview-updates" class="public-post-preview-updates" role="status" aria-live="polite"></div>' . "\n";
+	}
+
+	/**
+	 * Returns the CSS for the update notice.
+	 *
+	 * @since x.y.z
+	 *
+	 * @return string The CSS.
+	 */
+	private static function get_preview_updates_css() {
+		return <<<'CSS'
+.public-post-preview-updates {
+	position: fixed;
+	inset-block-end: 1rem;
+	inset-inline-start: 50%;
+	transform: translateX(-50%);
+	z-index: 999999;
+	max-width: calc(100% - 2rem);
+	font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+}
+.public-post-preview-updates:empty {
+	display: none;
+}
+.public-post-preview-updates__toast {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+	padding: 0.75rem 1rem;
+	background: #1d2327;
+	color: #fff;
+	border-radius: 4px;
+	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+.public-post-preview-updates__text {
+	margin: 0;
+}
+.public-post-preview-updates__action,
+.public-post-preview-updates__dismiss {
+	appearance: none;
+	margin: 0;
+	font: inherit;
+	line-height: 1;
+	color: #fff;
+	background: transparent;
+	border: 1px solid #fff;
+	border-radius: 3px;
+	cursor: pointer;
+	text-decoration: none;
+	white-space: nowrap;
+}
+.public-post-preview-updates__action {
+	padding: 0.375rem 0.75rem;
+}
+.public-post-preview-updates__dismiss {
+	padding: 0.25rem 0.5rem;
+	border-color: transparent;
+	font-size: 1.25rem;
+}
+.public-post-preview-updates__action:hover,
+.public-post-preview-updates__action:focus,
+.public-post-preview-updates__dismiss:hover,
+.public-post-preview-updates__dismiss:focus {
+	color: #1d2327;
+	background: #fff;
+}
+.public-post-preview-updates__action:focus-visible,
+.public-post-preview-updates__dismiss:focus-visible {
+	outline: 2px solid #fff;
+	outline-offset: 2px;
+}
+@media (prefers-reduced-motion: no-preference) {
+	.public-post-preview-updates__toast {
+		animation: public-post-preview-updates-in 0.2s ease-out;
+	}
+	@keyframes public-post-preview-updates-in {
+		from {
+			opacity: 0;
+			transform: translateY(0.5rem);
+		}
+	}
+}
+CSS;
+	}
+
+	/**
 	 * Filters the HTML output of individual page number links to use the
 	 * preview link.
 	 *
@@ -889,6 +1034,20 @@ class DS_Public_Post_Preview {
 			add_filter( 'comments_open', '__return_false' );
 			add_filter( 'pings_open', '__return_false' );
 			add_filter( 'wp_link_pages_link', array( __CLASS__, 'filter_wp_link_pages_link' ), 10, 2 );
+
+			/**
+			 * Filters whether the public preview page should poll for updates to the post.
+			 *
+			 * @since x.y.z
+			 *
+			 * @param bool $poll    Whether to poll for updates. Default true.
+			 * @param int  $post_id The post ID.
+			 */
+			if ( apply_filters( 'ppp_poll_for_updates', true, $post_id ) ) {
+				self::$preview_post_id = $post_id;
+				add_action( 'wp_enqueue_scripts', array( __CLASS__, 'enqueue_preview_updates_script' ) );
+				add_action( 'wp_footer', array( __CLASS__, 'print_preview_updates_container' ) );
+			}
 
 			do_action( 'ppp_show_public_preview', $post_id );
 		}
