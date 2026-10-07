@@ -807,24 +807,28 @@ class DS_Public_Post_Preview {
 		}
 
 		if ( in_array( get_post_status( $post ), self::get_published_statuses(), true ) ) {
-			$data = array(
-				'status'    => 'published',
-				'permalink' => get_permalink( $post ),
+			return rest_ensure_response(
+				array(
+					'status'    => 'published',
+					'permalink' => get_permalink( $post ),
+				)
 			);
-		} elseif ( ! in_array( $post->ID, self::get_preview_post_ids(), true ) ) {
+		}
+
+		if ( ! in_array( $post->ID, self::get_preview_post_ids(), true ) ) {
 			return new WP_Error(
 				'ppp_preview_unavailable',
 				__( 'No public preview available!', 'public-post-preview' ),
 				array( 'status' => 404 )
 			);
-		} else {
-			$data = array(
-				'status'   => 'preview',
-				'modified' => $post->post_modified,
-			);
 		}
 
-		return rest_ensure_response( $data );
+		return rest_ensure_response(
+			array(
+				'status'   => 'preview',
+				'modified' => $post->post_modified,
+			)
+		);
 	}
 
 	/**
