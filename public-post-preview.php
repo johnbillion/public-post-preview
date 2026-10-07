@@ -61,6 +61,7 @@ class DS_Public_Post_Preview {
 			add_action( 'pre_get_posts', array( __CLASS__, 'show_public_preview' ) );
 			add_filter( 'query_vars', array( __CLASS__, 'add_query_var' ) );
 			add_filter( 'user_switching_redirect_to', array( __CLASS__, 'user_switching_redirect_to' ), 10, 4 );
+			add_action( 'rest_api_init', array( __CLASS__, 'register_rest_routes' ) );
 		} else {
 			add_action( 'post_submitbox_misc_actions', array( __CLASS__, 'post_submitbox_misc_actions' ) );
 			add_action( 'save_post', array( __CLASS__, 'register_public_preview' ), 20, 2 );
@@ -682,6 +683,141 @@ class DS_Public_Post_Preview {
 		}
 
 		return true;
+	}
+
+	/**
+	 * Registers the REST API route used by preview pages to poll for updates.
+	 *
+	 * @since x.y.z
+	 */
+	public static function register_rest_routes() {
+		register_rest_route(
+			'public-post-preview/v1',
+			'/status/(?P<id>\d+)',
+			array(
+				array(
+					'methods'             => WP_REST_Server::READABLE,
+					'callback'            => array( __CLASS__, 'rest_get_preview_status' ),
+					'permission_callback' => array( __CLASS__, 'rest_preview_status_permission_check' ),
+					'args'                => array(
+						'id'   => array(
+							'description' => __( 'The ID of the previewed post.', 'public-post-preview' ),
+							'type'        => 'integer',
+							'required'    => true,
+							'minimum'     => 1,
+						),
+						'_ppp' => array(
+							'description' => __( 'The nonce from the public preview link.', 'public-post-preview' ),
+							'type'        => 'string',
+							'required'    => true,
+						),
+					),
+				),
+				'schema' => array( __CLASS__, 'get_rest_preview_status_schema' ),
+			)
+		);
+	}
+
+	/**
+	 * Returns the schema for the preview status response.
+	 *
+	 * @since x.y.z
+	 *
+	 * @return array The schema.
+	 */
+	public static function get_rest_preview_status_schema() {
+		return array(
+			'$schema'    => 'http://json-schema.org/draft-04/schema#',
+			'title'      => 'public-post-preview-status',
+			'type'       => 'object',
+			'properties' => array(
+				'status'    => array(
+					'description' => __( 'Whether the post is still a preview or has been published.', 'public-post-preview' ),
+					'type'        => 'string',
+					'enum'        => array( 'preview', 'published' ),
+					'readonly'    => true,
+				),
+				'modified'  => array(
+					'description' => __( 'The last modified time of the post, in the site\'s timezone. Only present while the post is a preview.', 'public-post-preview' ),
+					'type'        => 'string',
+					'readonly'    => true,
+				),
+				'permalink' => array(
+					'description' => __( 'The URL of the post. Only present once the post has been published.', 'public-post-preview' ),
+					'type'        => 'string',
+					'format'      => 'uri',
+					'readonly'    => true,
+				),
+			),
+		);
+	}
+
+	/**
+	 * Checks that the request carries a valid preview nonce for the post.
+	 *
+	 * @since x.y.z
+	 *
+	 * @param WP_REST_Request $request The request.
+	 * @return true|WP_Error True if the nonce is valid, WP_Error otherwise.
+	 */
+	public static function rest_preview_status_permission_check( $request ) {
+		$nonce   = $request->get_param( '_ppp' );
+		$post_id = (int) $request->get_param( 'id' );
+
+		if ( self::verify_nonce( $nonce, 'public_post_preview_' . $post_id ) ) {
+			return true;
+		}
+
+		return new WP_Error(
+			'ppp_link_expired',
+			__( 'This link has expired!', 'public-post-preview' ),
+			array( 'status' => 403 )
+		);
+	}
+
+	/**
+	 * Returns the current state of a previewed post.
+	 *
+	 * The response contains either the publication permalink or a token which
+	 * changes whenever the post is saved.
+	 *
+	 * @since x.y.z
+	 *
+	 * @param WP_REST_Request $request The request.
+	 * @return WP_REST_Response|WP_Error The response.
+	 */
+	public static function rest_get_preview_status( $request ) {
+		add_filter( 'rest_send_nocache_headers', '__return_true' );
+
+		$post = get_post( (int) $request['id'] );
+
+		if ( ! $post ) {
+			return new WP_Error(
+				'ppp_preview_unavailable',
+				__( 'No public preview available!', 'public-post-preview' ),
+				array( 'status' => 404 )
+			);
+		}
+
+		if ( in_array( get_post_status( $post ), self::get_published_statuses(), true ) ) {
+			$data = array(
+				'status'    => 'published',
+				'permalink' => get_permalink( $post ),
+			);
+		} elseif ( ! in_array( $post->ID, self::get_preview_post_ids(), true ) ) {
+			return new WP_Error(
+				'ppp_preview_unavailable',
+				__( 'No public preview available!', 'public-post-preview' ),
+				array( 'status' => 404 )
+			);
+		} else {
+			$data = array(
+				'status'   => 'preview',
+				'modified' => $post->post_modified,
+			);
+		}
+
+		return rest_ensure_response( $data );
 	}
 
 	/**
